@@ -182,3 +182,75 @@
   )
 )
 
+;; Abort a project (for project founders)
+(define-public (abort-project (project-id uint))
+  (let (
+    (project (unwrap! (map-get? space-projects { project-id: project-id }) ERR_PROJECT_NOT_FOUND))
+  )
+    (asserts! (does-project-exist project-id) ERR_PROJECT_NOT_FOUND)
+    (asserts! (is-eq tx-sender (get founder project)) ERR_NOT_AUTHORIZED)
+    (asserts! (get status-active project) ERR_NOT_AUTHORIZED)
+    (asserts! (<= block-height (get end-date project)) ERR_PAST_DEADLINE)
+    (asserts! (is-eq (get funds-raised project) u0) ERR_EXISTING_BACKERS)
+    (map-set space-projects
+      { project-id: project-id }
+      (merge project { status-active: false })
+    )
+    (ok true)
+  )
+)
+
+;; Extend project deadline
+(define-public (extend-project-deadline (project-id uint) (new-end-date uint))
+  (let (
+    (project (unwrap! (map-get? space-projects { project-id: project-id }) ERR_PROJECT_NOT_FOUND))
+    (current-end-date (get end-date project))
+    (extension-days (/ (- new-end-date current-end-date) u144)) ;; Assuming 144 blocks per day
+  )
+    (asserts! (does-project-exist project-id) ERR_PROJECT_NOT_FOUND)
+    (asserts! (is-eq tx-sender (get founder project)) ERR_NOT_AUTHORIZED)
+    (asserts! (get status-active project) ERR_NOT_AUTHORIZED)
+    (asserts! (<= block-height current-end-date) ERR_PAST_DEADLINE)
+    (asserts! (<= extension-days MAX_EXTENSION_LENGTH) ERR_INVALID_PARAMETERS)
+    (asserts! (>= (* (get funds-raised project) u100) (* (get funding-target project) FUNDING_THRESHOLD)) ERR_NO_EXTENSIONS_AVAILABLE)
+    (asserts! (< (get extension-count project) u3) ERR_NO_EXTENSIONS_AVAILABLE)
+    (map-set space-projects
+      { project-id: project-id }
+      (merge project { 
+        end-date: new-end-date,
+        voting-end-time: (+ new-end-date (* VOTING_DURATION u144)),
+        extension-count: (+ (get extension-count project) u1)
+      })
+    )
+    (ok true)
+  )
+)
+
+;; Read-only functions
+
+(define-read-only (get-space-project (project-id uint))
+  (map-get? space-projects { project-id: project-id })
+)
+
+(define-read-only (get-backer-contribution (project-id uint) (backer principal))
+  (map-get? project-backers { project-id: project-id, backer: backer })
+)
+
+(define-read-only (get-backer-vote (project-id uint) (backer principal))
+  (map-get? project-votes { project-id: project-id, backer: backer })
+)
+
+(define-read-only (get-project-vote-status (project-id uint))
+  (match (map-get? space-projects { project-id: project-id })
+    project (ok {
+      vote-count: (get vote-count project),
+      positive-votes: (get positive-votes project),
+      approval-rate: (calculate-approval-rate (get positive-votes project) (get vote-count project)),
+      requirements-met: (and
+        (>= (get vote-count project) MIN_REQUIRED_VOTES)
+        (>= (calculate-approval-rate (get positive-votes project) (get vote-count project)) MIN_APPROVAL_PERCENTAGE)
+      )
+    })
+    ERR_PROJECT_NOT_FOUND
+  )
+)
