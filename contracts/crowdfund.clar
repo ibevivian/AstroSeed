@@ -95,3 +95,90 @@
   )
 )
 
+;; Back a space project
+(define-public (back-project (project-id uint) (amount uint))
+  (let (
+    (project (unwrap! (map-get? space-projects { project-id: project-id }) ERR_PROJECT_NOT_FOUND))
+    (existing-backing (default-to { contribution: u0 } (map-get? project-backers { project-id: project-id, backer: tx-sender })))
+  )
+    (asserts! (does-project-exist project-id) ERR_PROJECT_NOT_FOUND)
+    (asserts! (> amount u0) ERR_LOW_FUNDS)
+    (asserts! (get status-active project) ERR_NOT_AUTHORIZED)
+    (asserts! (<= block-height (get end-date project)) ERR_PAST_DEADLINE)
+    (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+    (map-set project-backers
+      { project-id: project-id, backer: tx-sender }
+      { contribution: (+ (get contribution existing-backing) amount) }
+    )
+    (map-set space-projects
+      { project-id: project-id }
+      (merge project { funds-raised: (+ (get funds-raised project) amount) })
+    )
+    (ok true)
+  )
+)
+
+;; Cast vote for a project
+(define-public (cast-vote (project-id uint) (approved bool))
+  (let (
+    (project (unwrap! (map-get? space-projects { project-id: project-id }) ERR_PROJECT_NOT_FOUND))
+    (backing (unwrap! (map-get? project-backers { project-id: project-id, backer: tx-sender }) ERR_NOT_AUTHORIZED))
+  )
+    (asserts! (does-project-exist project-id) ERR_PROJECT_NOT_FOUND)
+    (asserts! (get status-active project) ERR_NOT_AUTHORIZED)
+    (asserts! (<= block-height (get voting-end-time project)) ERR_PAST_DEADLINE)
+    (asserts! (is-none (map-get? project-votes { project-id: project-id, backer: tx-sender })) ERR_PROJECT_EXISTS)
+    (map-set project-votes
+      { project-id: project-id, backer: tx-sender }
+      { approved: approved }
+    )
+    (map-set space-projects
+      { project-id: project-id }
+      (merge project {
+        vote-count: (+ (get vote-count project) u1),
+        positive-votes: (if approved (+ (get positive-votes project) u1) (get positive-votes project))
+      })
+    )
+    (ok true)
+  )
+)
+
+;; Claim funds (for project founders)
+(define-public (claim-funds (project-id uint))
+  (let (
+    (project (unwrap! (map-get? space-projects { project-id: project-id }) ERR_PROJECT_NOT_FOUND))
+  )
+    (asserts! (does-project-exist project-id) ERR_PROJECT_NOT_FOUND)
+    (asserts! (is-eq tx-sender (get founder project)) ERR_NOT_AUTHORIZED)
+    (asserts! (>= (get funds-raised project) (get funding-target project)) ERR_FUNDING_TARGET_NOT_MET)
+    (asserts! (> block-height (get voting-end-time project)) ERR_VOTING_ACTIVE)
+    (asserts! (>= (get vote-count project) MIN_REQUIRED_VOTES) ERR_VOTE_REQUIREMENT_NOT_MET)
+    (asserts! (>= (calculate-approval-rate (get positive-votes project) (get vote-count project)) MIN_APPROVAL_PERCENTAGE) ERR_VOTE_REQUIREMENT_NOT_MET)
+    (try! (as-contract (stx-transfer? (get funds-raised project) tx-sender (get founder project))))
+    (map-set space-projects
+      { project-id: project-id }
+      (merge project { status-active: false })
+    )
+    (ok true)
+  )
+)
+
+;; Request refund (for backers if a project fails)
+(define-public (request-refund (project-id uint))
+  (let (
+    (project (unwrap! (map-get? space-projects { project-id: project-id }) ERR_PROJECT_NOT_FOUND))
+    (backing (unwrap! (map-get? project-backers { project-id: project-id, backer: tx-sender }) ERR_PROJECT_NOT_FOUND))
+  )
+    (asserts! (does-project-exist project-id) ERR_PROJECT_NOT_FOUND)
+    (asserts! (> block-height (get voting-end-time project)) ERR_VOTING_ACTIVE)
+    (asserts! (or
+      (< (get funds-raised project) (get funding-target project))
+      (< (get vote-count project) MIN_REQUIRED_VOTES)
+      (< (calculate-approval-rate (get positive-votes project) (get vote-count project)) MIN_APPROVAL_PERCENTAGE)
+    ) ERR_NOT_AUTHORIZED)
+    (try! (as-contract (stx-transfer? (get contribution backing) tx-sender tx-sender)))
+    (map-delete project-backers { project-id: project-id, backer: tx-sender })
+    (ok true)
+  )
+)
+
